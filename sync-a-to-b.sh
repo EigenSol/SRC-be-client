@@ -29,6 +29,16 @@ wipe_worktree() {
   git clean -fdx >/dev/null 2>&1 || true
 }
 
+remove_excluded_path() {
+  local item="$1"
+
+  [[ -n "$item" ]] || return 0
+
+  rm -rf -- "$WORK_DIR/repo-b/$item"
+  # Drop any previously tracked excluded path from the index as well.
+  git rm -rf --cached --ignore-unmatch -- "$item" >/dev/null 2>&1 || true
+}
+
 extract_github_username() {
   local email="$1"
 
@@ -108,13 +118,11 @@ for SHA in "${COMMITS[@]}"; do
 
   wipe_worktree
   git -C "$REPO_A_DIR" archive "$SHA" | tar -x -C "$WORK_DIR/repo-b"
+  git add -A
 
   for item in "${EXCLUDE_LIST[@]}"; do
-    [[ -n "$item" ]] || continue
-    rm -rf "$WORK_DIR/repo-b/$item"
+    remove_excluded_path "$item"
   done
-
-  git add -A
 
   if git diff --cached --quiet; then
     log "  -> skipping (no changes outside excluded paths)"

@@ -1,0 +1,109 @@
+#! /bin/bash
+
+set -uo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="$ROOT_DIR/.env"
+ENCRYPTED_ENV_FILE="$ROOT_DIR/.env.encrypted"
+ENV_KEYS_FILE="$ROOT_DIR/.env.keys"
+
+print_help() {
+  cat <<EOF
+Usage:
+  $(basename "$0") "<commit-message>" [true|false]
+  $(basename "$0") --help
+
+Arguments:
+  <commit-message>   Required git commit message.
+  [true|false]       Optional push flag. Use true to push after commit.
+
+Examples:
+  $(basename "$0") "Update auth flow"
+  $(basename "$0") "Update auth flow" true
+EOF
+}
+
+fail() {
+  echo "Error: $1" >&2
+  exit 1
+}
+
+run_step() {
+  local error_message="$1"
+  shift
+
+  if ! "$@"; then
+    fail "$error_message"
+  fi
+}
+
+get_public_key() {
+  local public_key
+
+  public_key="$(grep '^DOTENV_PUBLIC_KEY=' "$ENV_KEYS_FILE" | head -n 1 | cut -d '=' -f 2-)"
+  public_key="${public_key%\"}"
+  public_key="${public_key#\"}"
+
+  if [ -z "$public_key" ]; then
+    fail "DOTENV_PUBLIC_KEY not found in .env.keys."
+  fi
+
+  printf '%s\n' "$public_key"
+}
+
+upsert_public_key() {
+  local public_key="$1"
+
+  if grep -q '^DOTENV_PUBLIC_KEY=' "$ENCRYPTED_ENV_FILE"; then
+    sed -i "s/^DOTENV_PUBLIC_KEY=.*/DOTENV_PUBLIC_KEY=\"$public_key\"/" "$ENCRYPTED_ENV_FILE" \
+      || fail "Failed to update DOTENV_PUBLIC_KEY in .env.encrypted."
+  else
+    printf '\nDOTENV_PUBLIC_KEY="%s"\n' "$public_key" >> "$ENCRYPTED_ENV_FILE" \
+      || fail "Failed to add DOTENV_PUBLIC_KEY to .env.encrypted."
+  fi
+}
+
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
+  print_help
+  exit 0
+fi
+
+if [ -z "${1:-}" ]; then
+  fail "Commit message is required as the first argument. Use --help for usage."
+fi
+COMMIT_MESSAGE="$1"
+
+if [ "${2:-false}" = "true" ]; then
+  PUSH_PERMISSION=true
+else
+  PUSH_PERMISSION=false
+fi
+
+if [ ! -f "$ENV_KEYS_FILE" ]; then
+  fail ".env.keys not found. Please get the keys from your administrator."
+fi
+
+if [ ! -f "$ENV_FILE" ]; then
+  fail ".env not found. Please create .env first. If you do not want to include .env.encrypted right now, you can commit and push manually."
+fi
+
+DOTENV_PUBLIC_KEY="$(get_public_key)"
+
+run_step "Failed to copy .env to .env.encrypted." \
+  cp "$ENV_FILE" "$ENCRYPTED_ENV_FILE"
+
+upsert_public_key "$DOTENV_PUBLIC_KEY"
+
+run_step "Failed to encrypt .env.encrypted using .env.keys." \
+  dotenvx encrypt -f "$ENCRYPTED_ENV_FILE" -fk "$ENV_KEYS_FILE"
+
+run_step "Failed to stage changes in $ROOT_DIR." \
+  git -C "$ROOT_DIR" add -A
+
+run_step "Git commit failed. No push was attempted." \
+  git -C "$ROOT_DIR" commit -m "$COMMIT_MESSAGE"
+
+if [ "$PUSH_PERMISSION" = "true" ]; then
+  run_step "Git push failed." \
+    git -C "$ROOT_DIR" push
+fi

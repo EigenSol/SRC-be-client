@@ -36,5 +36,3 @@ npm run start:dev
 ```bash
 docker compose up --build
 ```
-
-<!-- check 1788823982504 -->
